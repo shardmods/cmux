@@ -120,7 +120,8 @@ enum ReactGrabScriptLoader {
     private static func doFetch(version: String) async -> String? {
         let url = ReactGrabSettings.scriptURL(for: version)
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let session = BrowserDirectConnection.standard.makeURLSession()
+            let (data, _) = try await session.data(from: url)
             if let expectedHash = ReactGrabSettings.knownHashes[version] {
                 let hash = SHA256.hash(data: data)
                 let hex = hash.compactMap { String(format: "%02x", $0) }.joined()

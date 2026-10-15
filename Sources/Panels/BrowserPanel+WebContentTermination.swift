@@ -148,6 +148,10 @@ extension BrowserPanel {
         isMainFrameProvisionalNavigationActive = false
         tearDownWebViewBeforeReplacement(oldWebView, reason: reason)
 
+        // Install the direct override, or the remote/Cloud proxy, before the
+        // replacement web view's first network session is created.
+        applyProxyConfigurationIfAvailable(to: websiteDataStore)
+
         let replacement = makeReplacementWebView(
             profileID: profileID,
             websiteDataStore: websiteDataStore
