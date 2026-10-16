@@ -1,0 +1,124 @@
+# Build an ad-hoc-signed macOS app for this fork and upload it as an artifact.
+#
+# The embedded terminal uses the prebuilt GhosttyKit plus a Ghostty CLI helper
+# compiled on the runner. The app is not notarized. After download, clear the
+# quarantine attribute before opening it:
+#   xattr -dr com.apple.quarantine /path/to/cmux.app
+name: Unsigned macOS app
+
+on:
+  workflow_dispatch:
+  pull_request:
+
+permissions:
+  contents: read
+  attestations: read
+
+concurrency:
+  group: unsigned-macos-app-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unsigned-app:
+    # GitHub-hosted macos-26 on this fork. The blacksmith label is only the
+    # manaflow-ai fallback so the workflow text stays valid in both places.
+    runs-on: ${{ github.repository_owner != 'manaflow-ai' && 'macos-26' || 'blacksmith-6vcpu-macos-26' }}
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: false
+          fetch-depth: 1
+
+      - name: Checkout build submodules
+        run: |
+          set -euo pipefail
+          git submodule sync -- ghostty vendor/bonsplit
+          if ! git submodule update --init --depth 1 ghostty vendor/bonsplit; then
+            echo "Shallow submodule fetch failed; fetching the pinned commits."
+            git submodule update --init ghostty vendor/bonsplit
+          fi
+          test -d ghostty/src/shell-integration
+          test -d vendor/bonsplit
+
+      - name: Select Xcode
+        run: ./scripts/select-ci-xcode.sh
+
+      - name: Install Rust
+        run: ./scripts/install-rust-ci.sh
+
+      - name: Install Zig
+        run: ./scripts/install-zig-ci.sh
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.x"
+          cache: false
+
+      - name: Download GhosttyKit
+        run: ./scripts/download-prebuilt-ghosttykit.sh
+
+      - name: Build Release app
+        run: |
+          set -euo pipefail
+          go_bin="$(command -v go)"
+          test -n "$go_bin"
+          export CMUX_WIREGUARD_GO_BINARY="$go_bin"
+          xcodebuild \
+            -project cmux.xcodeproj \
+            -scheme cmux \
+            -configuration Release \
+            -derivedDataPath "$PWD/build/DerivedData" \
+            -destination "generic/platform=macOS" \
+            -clonedSourcePackagesDirPath "$PWD/.spm-cache" \
+            -packageCachePath "$PWD/.spm-cache/.package-cache" \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=YES \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Bundle cmux-tui and ad-hoc sign
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          app="$PWD/build/DerivedData/Build/Products/Release/cmux.app"
+          test -d "$app"
+          if ! ./scripts/install-cmux-tui-client.sh "$app" --arch arm64; then
+            echo "::warning::Attested cmux-tui install failed; installing without attestation."
+            ./scripts/install-cmux-tui-client.sh "$app" --arch arm64 --allow-unattested
+          fi
+          # Ad-hoc signature lets Apple Silicon launch the bundle. It does not
+          # satisfy Gatekeeper, so a downloaded copy still needs quarantine cleared.
+          codesign --force --deep --sign - "$app"
+          codesign --verify --verbose=2 "$app"
+          mkdir -p dist
+          ditto -c -k --keepParent "$app" dist/cmux-macos-arm64.zip
+          hdiutil create -volname cmux -srcfolder "$app" -ov -format UDZO dist/cmux-macos-arm64.dmg
+          ls -lh dist
+
+      - name: Upload app artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cmux-macos-arm64-unsigned
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Summarize install
+        run: |
+          {
+            echo "### Unsigned cmux build"
+            echo
+            echo "Artifact \`cmux-macos-arm64-unsigned\` contains \`cmux-macos-arm64.zip\` and \`cmux-macos-arm64.dmg\` (arm64, ad-hoc signed, not notarized)."
+            echo
+            echo "After unzipping:"
+            echo
+            echo '```sh'
+            echo "xattr -dr com.apple.quarantine /path/to/cmux.app"
+            echo "open /path/to/cmux.app"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

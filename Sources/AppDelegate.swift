@@ -1731,7 +1731,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         AppearanceSettingsUserDefaultsObserver.shared.startObserving()
         systemAppearanceObserver.startObserving()
         accentColorObserver.startObserving()
-        BrowserSystemProxyWatcher.shared.startObserving()
         if isRunningUnderXCTest {
             NSApp.setActivationPolicy(.regular)
         } else {

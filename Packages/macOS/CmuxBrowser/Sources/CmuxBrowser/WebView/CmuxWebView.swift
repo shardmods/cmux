@@ -1951,7 +1951,9 @@ public final class CmuxWebView: CmuxUndoableWebView {
             // URLSession delivers off the main actor; these values are only used after hopping back to main.
             nonisolated(unsafe) let fallbackTarget = fallbackTarget
             nonisolated(unsafe) let sender = sender
-            URLSession.shared.dataTask(with: request) { data, response, error in
+            // The task retains the session, which bypasses the system proxy.
+            let session = BrowserDirectConnection.standard.makeURLSession()
+            session.dataTask(with: request) { data, response, error in
                 DispatchQueue.main.async {
                     guard let data, error == nil else {
                         let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
@@ -2147,7 +2149,9 @@ public final class CmuxWebView: CmuxUndoableWebView {
 
             // URLSession delivers off the main actor; the completion only runs after hopping back to main.
             nonisolated(unsafe) let completion = completion
-            URLSession.shared.dataTask(with: request) { data, response, error in
+            // The task retains the session, which bypasses the system proxy.
+            let session = BrowserDirectConnection.standard.makeURLSession()
+            session.dataTask(with: request) { data, response, error in
                 DispatchQueue.main.async {
                     guard let data, !data.isEmpty, error == nil else {
                         self.debugContextDownload(

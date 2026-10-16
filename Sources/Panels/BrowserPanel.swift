@@ -13,7 +13,6 @@ import AppKit
 import Bonsplit
 import CmuxTerminalCore
 import Network
-import CFNetwork
 import SQLite3
 import CryptoKit
 import Darwin
@@ -1946,7 +1945,8 @@ actor BrowserSearchSuggestionService {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await URLSession.shared.data(for: req)
+            let session = BrowserDirectConnection.standard.makeURLSession()
+            (data, response) = try await session.data(for: req)
         } catch {
             return []
         }
@@ -3171,6 +3171,10 @@ final class BrowserPanel: Panel, ObservableObject {
         // Ensure browser cookies/storage persist across navigations and launches.
         // This reduces repeated consent/bot-challenge flows on sites like Google.
         configuration.websiteDataStore = websiteDataStore
+        // An empty proxy list is WebKit's system-proxy fallback. Local browser
+        // stores get the direct override here, before the first load. A store
+        // that already carries a Cloud, remote, or REPL proxy is left alone.
+        BrowserDirectConnection.standard.applyIfUnconfigured(to: websiteDataStore)
         if configuration.urlSchemeHandler(forURLScheme: CmuxDiffViewerURLSchemeHandler.scheme) == nil {
             configuration.setURLSchemeHandler(
                 CmuxDiffViewerURLSchemeHandler.shared,
@@ -4293,29 +4297,29 @@ final class BrowserPanel: Panel, ObservableObject {
         resumePendingRemoteNavigationIfNeeded()
     }
 
-    private func applyProxyConfigurationIfAvailable() {
+    func applyProxyConfigurationIfAvailable(to explicitStore: WKWebsiteDataStore? = nil) {
         guard #available(macOS 14.0, *) else { return }
+        let store = explicitStore ?? webView.configuration.websiteDataStore
         // A browser REPL session's proxy store keeps the proxy it was given.
-        if BrowserReplProxyStores.owns(webView.configuration.websiteDataStore) { return }
+        if BrowserReplProxyStores.owns(store) { return }
 
         if cloudBrowserMachineID != nil {
             if let endpoint = cloudBrowserProxyEndpoint, let address = cloudAccess.model?.target.host {
-                webView.configuration.websiteDataStore.proxyConfigurations = [CloudBrowserRouting.configuration(endpoint: endpoint, address: address, remoteNetwork: cloudAccess.model?.usesRemoteNetwork == true)]
+                store.proxyConfigurations = [CloudBrowserRouting.configuration(endpoint: endpoint, address: address, remoteNetwork: cloudAccess.model?.usesRemoteNetwork == true)]
             }
             return
         }
 
-        let store = webView.configuration.websiteDataStore
         guard let endpoint = remoteProxyEndpoint else {
-            // Local panes mirror an active system proxy with loopback excluded
-            // (#5888); remote panes keep [] while their endpoint is pending/lost.
-            store.proxyConfigurations = usesRemoteWorkspaceProxy
-                ? [] : BrowserSystemProxyMirror.currentProxyConfigurations()
+            // Local panes, and remote panes whose tunnel is not up, must not
+            // fall through to the macOS system proxy. An empty list is that
+            // fallback.
+            BrowserDirectConnection.standard.apply(to: store)
             return
         }
 
         guard let configurations = Self.remoteWorkspaceProxyConfigurations(for: endpoint) else {
-            store.proxyConfigurations = []
+            BrowserDirectConnection.standard.apply(to: store)
             return
         }
         store.proxyConfigurations = [configurations.socks, configurations.connect]
@@ -4980,12 +4984,6 @@ final class BrowserPanel: Panel, ObservableObject {
             }
             .store(in: &webViewCancellables)
 
-        // Keep the local-workspace system-proxy mirror fresh when the user
-        // toggles a global proxy or switches network locations mid-session.
-        NotificationCenter.default.publisher(for: .browserSystemProxySettingsDidChange)
-            .sink { [weak self] _ in self?.applyProxyConfigurationIfAvailable() }
-            .store(in: &webViewCancellables)
-
         // Apply the configured background for the freshly bound webview (covers
         // the initial bind and every post-crash replacement).
         applyConfiguredWebViewBackground()
@@ -5460,7 +5458,8 @@ final class BrowserPanel: Panel, ObservableObject {
                             "url=\(effectiveRequest.url?.absoluteString ?? "<nil>")"
                         )
 #endif
-                        (data, response) = try await URLSession.shared.data(for: effectiveRequest)
+                        let session = BrowserDirectConnection.standard.makeURLSession()
+                        (data, response) = try await session.data(for: effectiveRequest)
                     }
                 }
             } catch {

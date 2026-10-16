@@ -46,6 +46,7 @@ public final class BrowserReplFetcher: NSObject, URLSessionDataDelegate, @unchec
         configuration.httpCookieAcceptPolicy = .never
         configuration.httpCookieStorage = nil
         configuration.timeoutIntervalForRequest = 60
+        BrowserDirectConnection.standard.disableSystemProxy(on: configuration)
         if let protocolClasses {
             configuration.protocolClasses = protocolClasses + (configuration.protocolClasses ?? [])
         }
