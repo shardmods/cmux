@@ -1,0 +1,85 @@
+# Take the already-built unsigned app artifact, embed the SSH daemon, re-sign.
+# Avoids a full Xcode rebuild: downloads the prebuilt cmux.app from an earlier
+# run, adds cmuxd-remote + manifest, signs ad-hoc on a clean runner, re-uploads.
+name: Resign with daemon
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Run ID that produced cmux-macos-arm64-unsigned
+        required: true
+        default: "38826544587"
+      app_version:
+        description: CFBundleShortVersionString of that app
+        required: true
+        default: "0.65.2"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  resign:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: false
+          fetch-depth: 1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.x"
+          cache: false
+
+      - name: Download prebuilt app
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download "${{ inputs.run_id }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name cmux-macos-arm64-unsigned \
+            --dir dl
+          ls -l dl
+          mkdir -p appdir
+          ditto -x -k dl/cmux-macos-arm64.zip appdir
+          test -d appdir/cmux.app
+
+      - name: Build and embed SSH daemon, then sign
+        run: |
+          set -euo pipefail
+          app="$PWD/appdir/cmux.app"
+          have="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")"
+          test "$have" = "${{ inputs.app_version }}"
+          ./scripts/build_remote_daemon_release_assets.sh \
+            --version "${{ inputs.app_version }}" \
+            --release-tag "v${{ inputs.app_version }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --output-dir remote-daemon-assets
+          python3 scripts/verify_remote_daemon_release.py \
+            --manifest remote-daemon-assets/cmuxd-remote-manifest.json \
+            --assets-dir remote-daemon-assets \
+            --app "$app" --embed --bundle-assets
+          xattr -cr "$app"
+          codesign --force --deep --sign - "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+
+      - name: Repackage signed app
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          ditto -c -k --keepParent appdir/cmux.app out/cmux-macos-arm64-daemon.zip
+          ls -lh out
+
+      - name: Upload signed app
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cmux-macos-arm64-daemon-signed
+          path: out/cmux-macos-arm64-daemon.zip
+          if-no-files-found: error
+          retention-days: 7
